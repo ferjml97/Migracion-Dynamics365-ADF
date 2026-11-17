@@ -1,0 +1,65 @@
+# Especificación Técnica de Arquitectura y DataOps
+
+## 1. Topología de Control de Versiones (VCS)
+El ciclo de vida del código fuente (definiciones JSON de Azure Data Factory, scripts DDL/DML en SQL y pipelines YAML) sigue un modelo de **Repositorio Primario con Réplica Unidireccional (Mirroring)**:
+
+* **Primary VCS (Fuente de Verdad):** Azure DevOps Repos
+  * **Organización / Proyecto:** `Migracion-Dynamics365-ADF`
+  * **Rama de Colaboración:** `main`
+  * **Rama de Publicación ADF:** `adf_publish` (reservada para compilación de plantillas ARM)
+* **Secondary VCS (Espejo Público/Portafolio):** GitHub
+  * **Repositorio:** `migracion-dynamics365-adf`
+  * **Estado Inicial:** Repositorio vacío (`HEAD` nulo) para prevenir conflictos de historial divergente (`non-fast-forward` errors) durante la sincronización inicial.
+
+## 2. Gestión de Identidades y Secretos
+Para habilitar la comunicación automatizada entre Azure Pipelines y la API de GitHub sin comprometer credenciales en texto plano:
+
+* **Servicio de Almacenamiento:** Azure DevOps Pipelines > Library
+* **Nombre del Grupo de Variables:** `Secretos-GitHub`
+* **Identificador de Variable:** `GITHUB_PAT`
+* **Tipo de Almacenamiento:** `Secret` (valor encriptado en reposo y enmascarado en logs de ejecución)
+* **Alcance (Scopes) del Token en GitHub:** `repo` (control total de lectura/escritura sobre repositorios)
+
+## 3. Diagrama de Flujo de Código y Despliegue (CI/CD)
+
+```text
++-----------------------+       Commit / PR       +---------------------------+
+|  Azure Data Factory   | ----------------------> |    Azure DevOps Repos     |
+|  (Entorno Desarrollo) |                         |       (Rama: main)        |
++-----------------------+                         +-------------+-------------+
+                                                                |
+                                       +------------------------+------------------------+
+                                       | (Trigger Automático en main)                    | (Trigger Automático en main)
+                                       v                                                 v
+                       +-------------------------------+                 +-------------------------------+
+                       |   Pipeline: Sync-to-GitHub    |                 |   Pipeline: ADF-CI-CD-Deploy  |
+                       |   (Git Push --force Mirror)   |                 |   (Compilación ARM & Release) |
+                       +---------------+---------------+                 +---------------+---------------+
+                                       |                                                 |
+                                       v                                                 v
+                       +-------------------------------+                 +-------------------------------+
+                       |      GitHub Repository        |                 |   Azure Data Factory (Prod)   |
+                       |   (Respaldo / Portafolio)     |                 |   + Microsoft Dataverse       |
+                       +-------------------------------+                 +-------------------------------+
+                
+---
+
+## 4. Especificación del Pipeline de Sincronización (Mirroring)
+
+* **Ruta del Archivo:** `.pipelines/mirror-github.yml`
+* **Evento Disparador (Trigger):** `push` sobre la rama `main`.
+* **Entorno de Ejecución (Agent Pool):** `ubuntu-latest` (Microsoft-hosted agent).
+* **Dependencias de Seguridad:** Vinculación explícita al Variable Group `Secretos-GitHub` mediante la directiva `variables: - group: Secretos-GitHub`.
+* **Mecanismo de Sincronización:**
+  * Ejecución de `checkout: self` con `clean: true` para garantizar un directorio de trabajo limpio.
+  * Configuración dinámica de remoto secundario autenticado vía HTTPS con inyección de variable secreta en tiempo de ejecución (`$(GITHUB_PAT)`).
+  * Ejecución de `git push github HEAD:main --force` para garantizar que el árbol de commits del espejo sea idéntico al origen de verdad.
+
+### Arquitectura de CI/CD y Replicación Segura (DataOps)
+* **Control de Versiones Dual:** Azure Repos actúa como fuente única de la verdad (*Single Source of Truth*) privada, mientras que GitHub funciona como repositorio espejo público para portafolio.
+* **Agente Auto-hospedado (Self-Hosted Agent):** Ejecución de pipelines sobre un agente Windows local configurado como servicio de sistema (`vstsagent`), permitiendo control total del entorno de ejecución y acceso seguro a recursos locales.
+* **Pipeline de Sanitización y Espejo (`.pipelines/mirror-github.yml`):**
+  * Disparador automático (`CI trigger`) en cada commit hacia la rama `main`.
+  * Aislamiento de historial mediante reinicialización limpia en el espacio de trabajo del agente (`_work`) para evitar conflictos de referencias remotas.
+  * Filtrado automatizado de archivos sensibles/personales mediante `git rm --cached` previo al `push --force` autenticado con tokens encriptados vía *Variable Groups* (`Secretos-GitHub`).
+

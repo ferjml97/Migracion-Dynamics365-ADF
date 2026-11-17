@@ -1,0 +1,35 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  name: 'Default'
+
+variables:
+- group: Secretos-GitHub
+
+steps:
+- checkout: self
+  persistCredentials: true
+  clean: true
+
+- script: |
+    git config --global user.email "bot-sync@azuredevops.local"
+    git config --global user.name "Azure DevOps Sync Bot"
+    
+    REM Creamos un repositorio completamente limpio en la zona de trabajo
+    rd /s /q .git 2>nul
+    git init
+    git branch -M main
+    git add .
+    
+    REM Removemos los archivos privados para que no se suban al espejo público
+    git rm -r --cached --ignore-unmatch Bitacora* ByCV* docs/*bitacora* docs/*Bitacora* docs/*ByCV* 2>nul
+    
+    git commit -m "chore: sync clean repository mirror"
+    
+    REM Conectamos y forzamos el push limpio hacia GitHub
+    git remote add github https://$(GITHUB_PAT)@github.com/ferjml97/migracion-dynamics365-adf.git
+    git push github main --force
+  displayName: 'Replicar rama main hacia GitHub de forma limpia'
